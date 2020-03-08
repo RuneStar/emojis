@@ -1,6 +1,6 @@
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import java.awt.image.BufferedImage
+import java.io.File
 import java.io.IOException
 import java.net.URL
 import java.nio.file.Files
@@ -9,20 +9,24 @@ import javax.imageio.ImageIO
 
 fun main() {
     val shortCodes = shortCodes()
-    downloadSvgs(shortCodes.values.distinct(), Path.of("svg"))
-    names(shortCodes, Path.of("svg"), Path.of("names.csv"))
+    downloadSvgs(shortCodes.values, Path.of("svg"))
+    names(shortCodes, Path.of("names.csv"))
     val size = 16
     rasterize(Path.of("svg"), Path.of("png"), size)
-    combine(Path.of("png"), Path.of("emojis.png"), size)
+    combine(shortCodes, Path.of("png"), Path.of("emojis.png"), size)
     roundAlpha(Path.of("emojis.png"))
     optimize(Path.of("emojis.png"))
 }
 
-private fun shortCodes(): Map<String, String> {
-    return jacksonObjectMapper()
-        .readValue<Map<String, String>>(URL("https://api.github.com/emojis"))
-        .filterValues { it.contains("/unicode/") }
-        .mapValues { it.value.substringBeforeLast('.').substringAfterLast("/") }
+private fun shortCodes(): Map<String, String> = jacksonObjectMapper()
+    .readTree(File("discord.emojis.json"))
+    .flatten()
+    .associate { it["names"].first().asText() to emojiSequence(it["surrogates"].asText()) }
+
+private fun emojiSequence(s: String): String {
+    val cps = s.codePoints().toArray().toMutableList()
+    if (0x200d !in cps) cps.remove(0xfe0f)
+    return cps.joinToString("-") { it.toString(16) }
 }
 
 private fun downloadSvgs(codePoints: Iterable<String>, dir: Path) {
@@ -49,18 +53,14 @@ private fun rasterize(inputDir: Path, outputDir: Path, size: Int) {
     p.waitFor()
 }
 
-private fun names(shortCodes: Map<String, String>, dir: Path, output: Path) {
-    val names = StringBuilder()
-    dir.toFile().listFiles().sorted().map { it.nameWithoutExtension }.forEachIndexed { i, codePoint ->
-        shortCodes.filter { it.value == codePoint }.forEach { names.append("${it.key},$i\n") }
-    }
-    Files.writeString(output, names.toString())
+private fun names(shortCodes: Map<String, String>, output: Path) {
+    Files.writeString(output, shortCodes.keys.joinToString(","))
 }
 
-private fun combine(dir: Path, output: Path, size: Int) {
-    val files = dir.toFile().listFiles().sorted()
-    val dst = BufferedImage(size, files.size * size, BufferedImage.TYPE_INT_ARGB)
-    files.forEachIndexed { i, file ->
+private fun combine(shortCodes: Map<String, String>, dir: Path, output: Path, size: Int) {
+    val dst = BufferedImage(size, shortCodes.size * size, BufferedImage.TYPE_INT_ARGB)
+    for ((i, v) in shortCodes.values.withIndex()) {
+        val file = dir.resolve("$v.png").toFile()
         dst.createGraphics().drawImage(ImageIO.read(file), 0, i * size, null)
     }
     ImageIO.write(dst, "png", output.toFile())
